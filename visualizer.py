@@ -11,7 +11,10 @@ import matplotlib.font_manager as fm
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
-from wordcloud import WordCloud
+try:
+    from wordcloud import WordCloud
+except Exception:  # pragma: no cover - optional visual dependency
+    WordCloud = None
 
 # ── 品牌色 ────────────────────────────────────────────────────────────────────
 BROWN_DARK   = '#8B5E3C'
@@ -151,6 +154,8 @@ def weekday_bar(stats: dict) -> plt.Figure:
 def _make_wordcloud(word_freq: Counter, colormap: str = 'YlOrBr',
                     width: int = 800, height: int = 420) -> 'WordCloud':
     """内部：生成 WordCloud 对象"""
+    if WordCloud is None:
+        raise RuntimeError('wordcloud package is unavailable')
     from wordcloud import WordCloud as WC
     kwargs: dict = dict(
         background_color=CREAM,
@@ -164,6 +169,27 @@ def _make_wordcloud(word_freq: Counter, colormap: str = 'YlOrBr',
     return WC(**kwargs).generate_from_frequencies(dict(word_freq.most_common(100)))
 
 
+def _fallback_word_panel(ax, word_freq: Counter, title: str, color: str):
+    """无 wordcloud 依赖时，用高频词横向条形图替代词云。"""
+    words = word_freq.most_common(18)
+    if not words:
+        ax.text(0.5, 0.5, '词频数据不足', ha='center', va='center',
+                fontsize=12, color=TEXT_MID, transform=ax.transAxes)
+        ax.axis('off')
+        return
+    labels = [w for w, _ in words][::-1]
+    values = [c for _, c in words][::-1]
+    ax.barh(range(len(labels)), values, color=color, alpha=0.86)
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels(labels, fontsize=9, color=TEXT_DARK)
+    ax.tick_params(axis='x', colors=TEXT_MID, labelsize=8)
+    ax.set_title(title, fontsize=12, fontweight='bold', color=TEXT_DARK, pad=8)
+    ax.set_facecolor(CREAM)
+    for spine in ('top', 'right', 'left'):
+        ax.spines[spine].set_visible(False)
+    ax.spines['bottom'].set_color(BROWN_PALE)
+
+
 def word_cloud(stats: dict) -> plt.Figure:
     """单人中文词云（兼容旧接口）"""
     wf: Counter = stats['word_freq']
@@ -173,11 +199,14 @@ def word_cloud(stats: dict) -> plt.Figure:
         ax.axis('off')
         return fig
 
-    wc = _make_wordcloud(wf)
     fig, ax = plt.subplots(figsize=(11, 5.5), facecolor=CREAM)
-    ax.imshow(wc, interpolation='bilinear')
-    ax.axis('off')
-    ax.set_title('你嘴里最常出现的词', fontsize=13, fontweight='bold', color=TEXT_DARK, pad=10)
+    if WordCloud is None:
+        _fallback_word_panel(ax, wf, '你嘴里最常出现的词', BROWN_DARK)
+    else:
+        wc = _make_wordcloud(wf)
+        ax.imshow(wc, interpolation='bilinear')
+        ax.axis('off')
+        ax.set_title('你嘴里最常出现的词', fontsize=13, fontweight='bold', color=TEXT_DARK, pad=10)
     fig.patch.set_facecolor(CREAM)
     plt.tight_layout()
     return fig
@@ -199,12 +228,14 @@ def word_cloud_pair(stats_self: dict, stats_partner: dict,
             ax.text(0.5, 0.5, '词频数据不足', ha='center', va='center',
                     fontsize=12, color=TEXT_MID, transform=ax.transAxes)
             ax.axis('off')
+        elif WordCloud is None:
+            _fallback_word_panel(ax, wf, f'{name} 的高频词', BROWN_DARK if ax is axes[0] else TEAL_DARK)
         else:
             wc = _make_wordcloud(wf, colormap=cmap)
             ax.imshow(wc, interpolation='bilinear')
             ax.axis('off')
-        ax.set_title(f'{name} 的高频词', fontsize=12, fontweight='bold',
-                     color=TEXT_DARK, pad=8)
+            ax.set_title(f'{name} 的高频词', fontsize=12, fontweight='bold',
+                         color=TEXT_DARK, pad=8)
 
     plt.tight_layout(pad=1.5)
     return fig

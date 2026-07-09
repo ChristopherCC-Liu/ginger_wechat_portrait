@@ -10,7 +10,10 @@ import re
 from typing import List
 
 import pandas as pd
-from anthropic import Anthropic
+try:
+    from anthropic import Anthropic
+except Exception:  # optional unless analyze() is called
+    Anthropic = None
 
 # ── 阶段一：语言特征提取 ──────────────────────────────────────────────────────
 
@@ -111,6 +114,8 @@ def analyze(messages: List[str], date_range: tuple) -> dict:
     调用 Claude 进行完整人格分析。
     返回结构化 dict，若 JSON 解析失败则返回 {'raw': ..., 'parse_error': True}。
     """
+    if Anthropic is None:
+        raise RuntimeError("anthropic package is required only when calling personality.analyze()")
     client = Anthropic()
 
     months = max(1, (date_range[1] - date_range[0]).days // 30)
