@@ -28,7 +28,7 @@
 | 项目 | 要求 |
 |------|------|
 | 操作系统 | macOS 12 及以上 |
-| 微信版本 | Mac 客户端 4.x |
+| 微信版本 | Mac 客户端 4.x / 4.1.x（自动探测当前数据目录） |
 | Python | 3.10 及以上（`python3 --version` 检查） |
 | Claude Code | 已安装（`claude --version` 检查） |
 
@@ -68,6 +68,36 @@ claude
 
 **Skill 会自动完成从安装依赖到生成报告的全部流程。**
 
+### 内置数据库工具
+
+项目现在直接包含最新版微信 4.x 所需的环境诊断、逐库密钥扫描和批量解密工具，不再依赖另行克隆 `wechat-db-decrypt-macos`：
+
+```bash
+# 1. 只读诊断：显示微信版本、账号数据库、运行 PID、LLDB、SQLCipher 和 SIP 状态
+python3 tools/wechat_db/doctor_macos.py
+
+# 2. 在系统 Terminal.app 中提取逐数据库密钥
+PYTHONPATH="$(lldb -P)" \
+  /Library/Developer/CommandLineTools/usr/bin/python3 \
+  tools/wechat_db/find_keys_macos.py --output wechat_keys.json
+
+# 3. 批量解密为普通 SQLite，保留 message/contact 等原目录结构
+python3 tools/wechat_db/decrypt_macos.py \
+  --keys wechat_keys.json --output decrypted
+```
+
+工具会自动识别正式版和 Beta 版的 `xwechat_files/<账号>/db_storage`，按数据库第一页 salt 验证每把密钥，并在解密后运行 SQLite `quick_check`。密钥文件权限会收紧为 `0600`。
+
+若系统中同时有多个名为 `WeChat` 的进程，扫描器会优先选择实际打开当前账号数据库的 PID。无法唯一判断时，先运行：
+
+```bash
+PYTHONPATH="$(lldb -P)" \
+  /Library/Developer/CommandLineTools/usr/bin/python3 \
+  tools/wechat_db/find_keys_macos.py --list-processes
+```
+
+然后按输出添加 `--pid <PID>`，不会再触发 LLDB 的 `more than one process named WeChat` 错误。
+
 ---
 
 ## 需要手动完成的前置步骤
@@ -80,9 +110,9 @@ macOS 的 SIP 会阻止读取微信进程中的加密密钥，必须先在恢复
 
 **详细步骤见 [安装指南.md](./安装指南.md)**
 
-### 步骤二：手动运行密钥提取脚本
+### 步骤二：手动运行项目内置密钥提取脚本
 
-密钥提取需要调试器权限（lldb），Claude Code 子进程不具备此权限，**必须在系统 Terminal.app 中手动运行**。
+密钥提取需要调试器权限（lldb），必须在已获“开发者工具”权限的系统 Terminal.app 中运行。脚本使用 `--pid` 附加，不依赖 LLDB 按进程名选择。
 
 Skill 会给出完整命令，你复制粘贴到 Terminal.app 执行，然后在微信里依次点开几个聊天窗口触发密钥捕获即可。
 
@@ -144,4 +174,4 @@ wechat_analysis_output/
 
 ---
 
-*macOS 12+ · WeChat 4.x · Python 3.10+ · Claude Code*
+*macOS 12+ · WeChat 4.x / 4.1.x · Python 3.10+ · Xcode Command Line Tools · Claude Code*

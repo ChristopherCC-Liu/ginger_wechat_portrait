@@ -1,15 +1,16 @@
-# 用户数据 — 不提交
-config.json
-export_*.csv
-*.meta.json
-wechat_analysis_output/
-
-# Python
+.DS_Store
 .venv/
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 
-# macOS
-.DS_Store
+# Local WeChat data and secrets
+config.json
+wechat_keys.json
+decrypted/
+*.db
+*.db-wal
+*.db-shm
+export_*.csv
+export_*.json
+*.meta.json
+wechat_analysis_output/

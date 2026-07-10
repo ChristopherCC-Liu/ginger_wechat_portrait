@@ -11,7 +11,8 @@ if [ -f "$(pwd)/export_contact.py" ]; then
 else
   TOOL_DIR="${WECHAT_ANALYZER_DIR:-$HOME/.claude/wechat-analyzer}"
 fi
-DECRYPT_TOOL="${WECHAT_DECRYPT_DIR:-$HOME/Documents/wechat-db-decrypt-macos}"
+KEY_FILE="${WECHAT_KEY_FILE:-$TOOL_DIR/wechat_keys.json}"
+DECRYPTED_DIR="${WECHAT_DECRYPTED_DIR:-$TOOL_DIR/decrypted}"
 ```
 
 ---
@@ -35,21 +36,15 @@ source "$VENV/bin/activate"
 
 ---
 
-### 步骤 2：安装解密工具（自动，首次）
+### 步骤 2：检查内置解密工具（自动）
 
-解密工具依赖 `sqlcipher`（用于解密数据库）和系统自带的 `lldb`（用于提取密钥，需要 SIP 关闭）。
+项目内置 `doctor_macos.py`、`find_keys_macos.py` 和 `decrypt_macos.py`。只需检查 `sqlcipher` 和 Xcode Command Line Tools，无需克隆外部解密仓库。
 
 ```bash
-# 安装解密工具仓库
-if [ ! -d "$DECRYPT_TOOL" ]; then
-  git clone https://github.com/Thearas/wechat-db-decrypt-macos.git "$DECRYPT_TOOL"
-  echo "DECRYPT_INSTALLED"
-else
-  echo "DECRYPT_EXISTS"
-fi
-
-# 检查并安装 sqlcipher
-which sqlcipher >/dev/null 2>&1 || brew install sqlcipher
+cd "$TOOL_DIR"
+python3 tools/wechat_db/doctor_macos.py
+command -v sqlcipher >/dev/null 2>&1 || brew install sqlcipher
+xcode-select -p >/dev/null 2>&1 || xcode-select --install
 ```
 
 ---
@@ -61,7 +56,8 @@ which sqlcipher >/dev/null 2>&1 || brew install sqlcipher
 #### Level 1：检查解密数据库是否已存在
 
 ```bash
-ls "$DECRYPT_TOOL/decrypted/"*.db 2>/dev/null && echo "DB_FOUND" || echo "DB_NOT_FOUND"
+find "$DECRYPTED_DIR" -type f -name '*.db' -print -quit 2>/dev/null \
+  | grep -q . && echo "DB_FOUND" || echo "DB_NOT_FOUND"
 ```
 
 **若 `DB_FOUND`**：数据库就绪，直接跳到步骤 5（询问联系人），完全跳过所有 SIP 相关步骤。
@@ -71,16 +67,17 @@ ls "$DECRYPT_TOOL/decrypted/"*.db 2>/dev/null && echo "DB_FOUND" || echo "DB_NOT
 #### Level 2：检查密钥文件是否已存在（SIP 无关）
 
 ```bash
-ls "$DECRYPT_TOOL/wechat_keys.json" 2>/dev/null && echo "KEY_FOUND" || echo "KEY_NOT_FOUND"
+test -s "$KEY_FILE" && echo "KEY_FOUND" || echo "KEY_NOT_FOUND"
 ```
 
 **若 `KEY_FOUND`**：密钥已提取，`decrypt_db.py` 不需要 SIP，直接执行：
 
 ```bash
-cd "$DECRYPT_TOOL" && python3 decrypt_db.py 2>&1
+cd "$TOOL_DIR" && "$VENV/bin/python" tools/wechat_db/decrypt_macos.py \
+  --keys "$KEY_FILE" --output "$DECRYPTED_DIR" 2>&1
 ```
 
-成功后记录 `$DECRYPT_TOOL/decrypted/` 路径，跳到步骤 5（询问联系人）。
+成功后记录 `$DECRYPTED_DIR` 路径，跳到步骤 5（询问联系人）。
 
 ---
 
@@ -105,9 +102,11 @@ csrutil status
 > "准备从微信内存提取密钥。请确认：① 微信 Mac 客户端当前处于登录状态 ② 近期在微信里打开过几个对话。确认后继续。"
 
 ```bash
-LLDB_PYTHON="/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Versions/A/Resources/Python"
-cd "$DECRYPT_TOOL" && PYTHONPATH="$LLDB_PYTHON" /Library/Developer/CommandLineTools/usr/bin/python3.9 find_key.py 2>&1
-# 成功后生成 wechat_keys.json
+cd "$TOOL_DIR"
+PYTHONPATH="$(lldb -P)" \
+  /Library/Developer/CommandLineTools/usr/bin/python3 \
+  tools/wechat_db/find_keys_macos.py --output "$KEY_FILE"
+# 成功后生成 wechat_keys.json；多进程时会自动选数据库实际拥有者
 ```
 
 > ⚠️ **此命令必须在系统 Terminal.app 中手动运行，不能通过 Claude Code 执行。**
@@ -115,18 +114,19 @@ cd "$DECRYPT_TOOL" && PYTHONPATH="$LLDB_PYTHON" /Library/Developer/CommandLineTo
 >
 > **用户操作步骤：**
 > 1. 打开 Terminal.app（不是 Claude Code 终端）
-> 2. 复制粘贴上方命令执行
-> 3. 看到提示后的操作见下方说明
+> 2. 先运行 `python3 tools/wechat_db/doctor_macos.py` 查看推荐 PID
+> 3. 复制粘贴上方命令执行；若无法自动选中，追加 `--pid <推荐 PID>`
 
 > **注意：此步骤需要用户配合操作**
 > 1. 脚本启动后会附加到微信进程，期间微信界面会短暂卡住（约 2-5 分钟，正在扫描内存）
-> 2. 微信恢复响应后，**切换到微信，依次点开 3-5 个不同的聊天窗口**，每次点开触发一次密钥捕获
-> 3. 终端输出 `[!] Found new key!` 后说明捕获成功
-> 4. 按 Ctrl+C 停止脚本，`wechat_keys.json` 自动保存
+> 2. 扫描结束后若仍缺少少量数据库密钥，打开对应聊天、收藏或朋友圈页面，再运行同一命令
+> 3. 终端输出 `[+] Verified key for:` 表示密钥已通过数据库 HMAC 校验
+> 4. 扫描结束后 `wechat_keys.json` 会以 `0600` 权限原子保存
 
-- 若失败报架构错误：改用 `arch -arm64 /Library/Developer/CommandLineTools/usr/bin/python3.9 find_key.py`
-- 若失败报 `ModuleNotFoundError: No module named 'lldb'`：确认使用的是 Python 3.9，`_lldb` 只支持 3.9
+- 若失败报架构错误：在完整扫描命令的 Python 前加 `arch -arm64`
+- 若失败报 `ModuleNotFoundError: No module named 'lldb'`：确认保留 `PYTHONPATH="$(lldb -P)"` 且使用 Xcode Command Line Tools 的 Python
 - 若失败报 Permission denied：SIP 未关闭，返回 Level 3
+- 若提示多个微信进程：运行同一脚本加 `--list-processes`，再加 `--pid <PID>`
 
 **密钥提取成功后立即告知用户：**
 > "密钥已提取完成！现在可以重新开启 SIP 了——后续解密和所有分析都不需要 SIP。
@@ -138,11 +138,12 @@ cd "$DECRYPT_TOOL" && PYTHONPATH="$LLDB_PYTHON" /Library/Developer/CommandLineTo
 然后执行解密：
 
 ```bash
-cd "$DECRYPT_TOOL" && python3 decrypt_db.py 2>&1
-# 成功后在 $DECRYPT_TOOL/decrypted/ 生成 .db 文件
+cd "$TOOL_DIR" && "$VENV/bin/python" tools/wechat_db/decrypt_macos.py \
+  --keys "$KEY_FILE" --output "$DECRYPTED_DIR" 2>&1
+# 成功后按原目录结构在 $DECRYPTED_DIR 生成普通 SQLite 文件
 ```
 
-成功后记录 `$DECRYPT_TOOL/decrypted/` 路径，继续步骤 5。
+成功后记录 `$DECRYPTED_DIR` 路径，继续步骤 5。
 
 ---
 

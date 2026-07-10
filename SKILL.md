@@ -13,7 +13,7 @@
   ┌──────────────────────────────────────────────────────────────┐
   │  Step 1   确认分析目标                           ← 未指定时询问  │
   │  Step 2   安装 Python 依赖（venv 隔离）           自动           │
-  │  Step 3   安装解密工具                           自动（首次）     │
+  │  Step 3   检查内置解密工具与当前微信版本           自动           │
   │  Step 4   三级数据库状态检查                                    │
   │    ├─ Level 1  .db 文件已存在？                  → 跳至 Step 7  │
   │    ├─ Level 2  wechat_keys.json 已存在？         → 跳至 Step 6  │
@@ -63,17 +63,18 @@ VENV="$TOOL_DIR/.venv"
 
 ---
 
-### Step 3 · 安装解密工具
+### Step 3 · 检查内置解密工具
 
-**触发条件**：自动，检测 `~/Documents/wechat-db-decrypt-macos` 是否存在
+**触发条件**：自动
 
 ```bash
-[ ! -d "$DECRYPT_TOOL" ] && \
-  git clone https://github.com/Thearas/wechat-db-decrypt-macos.git "$DECRYPT_TOOL"
-which sqlcipher >/dev/null 2>&1 || brew install sqlcipher
+cd "$TOOL_DIR"
+python3 tools/wechat_db/doctor_macos.py
+command -v sqlcipher >/dev/null 2>&1 || brew install sqlcipher
+xcode-select -p >/dev/null 2>&1 || xcode-select --install
 ```
 
-首次约需 10 秒，后续跳过。
+内置工具支持正式版和 Beta 版当前 `xwechat_files/<账号>/db_storage` 布局，显示实际客户端版本、账号目录、全部 WeChat PID、LLDB Python 路径、SQLCipher 和 SIP 状态。密钥扫描与解密不再依赖外部仓库。
 
 ---
 
@@ -84,7 +85,8 @@ which sqlcipher >/dev/null 2>&1 || brew install sqlcipher
 #### Level 1：检查解密数据库是否已存在
 
 ```bash
-ls "$DECRYPT_TOOL/decrypted/"*.db 2>/dev/null && echo "DB_FOUND"
+find "$TOOL_DIR/decrypted" -type f -name '*.db' -print -quit 2>/dev/null \
+  | grep -q . && echo "DB_FOUND"
 ```
 
 **若 DB_FOUND**：直接跳至 Step 7，跳过所有解密步骤。
@@ -92,7 +94,7 @@ ls "$DECRYPT_TOOL/decrypted/"*.db 2>/dev/null && echo "DB_FOUND"
 #### Level 2：检查密钥文件是否已存在
 
 ```bash
-ls "$DECRYPT_TOOL/wechat_keys.json" 2>/dev/null && echo "KEY_FOUND"
+test -s "$TOOL_DIR/wechat_keys.json" && echo "KEY_FOUND"
 ```
 
 **若 KEY_FOUND**：密钥已有，直接跳至 Step 6 执行解密（无需 SIP，无需手动操作）。
@@ -110,7 +112,7 @@ csrutil status
 
 ### Step 5 · 【手动】提取微信密钥
 
-> **为什么需要手动**：`find_key.py` 通过 `lldb` 附加到微信进程读取内存中的密钥。
+> **为什么需要手动**：`find_keys_macos.py` 通过 `lldb` 附加到微信进程读取内存中的逐数据库密钥。
 > Claude Code 的子进程不具备 `taskport` 权限，**必须由用户在系统 Terminal.app 中执行**。
 
 **操作前询问（AskUserQuestion）**：
@@ -123,24 +125,26 @@ csrutil status
 **确认后给出以下命令，让用户复制到 Terminal.app 执行**：
 
 ```bash
-cd ~/Documents/wechat-db-decrypt-macos
-PYTHONPATH="/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Versions/A/Resources/Python" \
-/Library/Developer/CommandLineTools/usr/bin/python3.9 find_key.py
+cd "$TOOL_DIR"
+PYTHONPATH="$(lldb -P)" \
+/Library/Developer/CommandLineTools/usr/bin/python3 \
+tools/wechat_db/find_keys_macos.py --output wechat_keys.json
 ```
 
 **同时告知用户操作步骤**：
-1. 脚本启动后微信会**短暂卡住**（正在附加进程，约 2～5 分钟，属正常现象）
-2. 微信恢复响应后，切换到微信，**依次点开 3～5 个不同的聊天窗口**
-3. 终端出现 `[!] Found new key!` 表示成功
-4. 按 `Ctrl+C` 停止，`wechat_keys.json` 自动保存
-5. 完成后回到 Claude Code 告知已完成
+1. 先运行 `python3 tools/wechat_db/doctor_macos.py` 查看实际版本、数据库目录和推荐 PID
+2. 脚本启动后微信会在附加和内存扫描期间短暂卡住
+3. 终端出现 `[+] Verified key for:` 表示该密钥已通过数据库第一页 HMAC 校验
+4. 若无法自动区分多个 WeChat 进程，先加 `--list-processes`，再按输出加 `--pid <PID>`
+5. 若仍有少量数据库未命中，打开相关聊天、收藏或朋友圈页面后重跑；已有密钥会复用
 
 **错误处理**：
 | 错误信息 | 处理方式 |
 |---------|---------|
-| `ModuleNotFoundError: No module named 'lldb'` | 确认使用的是 Python 3.9，`_lldb` 只支持 3.9 |
+| `ModuleNotFoundError: No module named 'lldb'` | 保留 `PYTHONPATH="$(lldb -P)"` 并使用 Xcode Command Line Tools 的 Python |
 | 架构错误（Apple Silicon） | 命令前加 `arch -arm64` |
 | `Permission denied` / `process attach denied` | SIP 未关闭，返回 Level 3 |
+| `more than one process named WeChat` | 内置脚本不按名字直接附加；运行 `--list-processes` 后使用 `--pid` |
 
 **密钥提取成功后，主动提示用户**：
 > 密钥已提取完成！现在可以立刻重新开启 SIP 了——后续解密和所有分析都不需要 SIP。
@@ -156,10 +160,11 @@ PYTHONPATH="/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.f
 **触发条件**：Level 2（密钥已有）或 Step 5 完成后
 
 ```bash
-cd "$DECRYPT_TOOL" && python3 decrypt_db.py 2>&1
+cd "$TOOL_DIR" && "$VENV/bin/python" tools/wechat_db/decrypt_macos.py \
+  --keys wechat_keys.json --output decrypted 2>&1
 ```
 
-成功后在 `$DECRYPT_TOOL/decrypted/` 生成 `.db` 文件，记录路径，继续 Step 7。
+成功后在 `$TOOL_DIR/decrypted/` 按原相对目录生成普通 SQLite 文件。每把密钥先做 HMAC 校验，每个输出再做 `PRAGMA quick_check`，通过后才原子替换目标文件。
 
 ---
 
