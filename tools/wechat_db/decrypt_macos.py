@@ -6,8 +6,10 @@ from __future__ import annotations
 import argparse
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -22,6 +24,119 @@ from tools.wechat_db.common import (  # noqa: E402
     resolve_db_dir,
     verify_raw_key,
 )
+
+
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def _lexists(path: Path) -> bool:
+    return os.path.lexists(os.fspath(path))
+
+
+def _absolute_output_path(path: Path) -> Path:
+    return path.expanduser().absolute()
+
+
+def _validate_owned_output_chain(path: Path) -> None:
+    """Reject user-controlled symlinks and foreign-owned path components."""
+    current_uid = os.getuid() if hasattr(os, "getuid") else None
+    seen_owned_component = current_uid is None
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if not _lexists(current):
+            continue
+        metadata = current.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            # macOS has root-owned aliases such as /var -> /private/var. They are
+            # tolerated only before entering the current user's owned subtree.
+            if (
+                seen_owned_component
+                or current_uid is None
+                or metadata.st_uid == current_uid
+            ):
+                raise ValueError(f"Refusing symbolic-link output path: {current}")
+            continue
+        if current_uid is None:
+            continue
+        if metadata.st_uid == current_uid:
+            seen_owned_component = True
+        elif seen_owned_component:
+            raise ValueError(f"Output path is not owned by the current user: {current}")
+    if not seen_owned_component:
+        raise ValueError(f"Output path has no current-user-owned parent: {path}")
+
+
+def _validate_owned_directory(path: Path) -> None:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"Refusing symbolic-link output directory: {path}")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"Expected an output directory: {path}")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise ValueError(f"Output directory is not owned by the current user: {path}")
+
+
+def _ensure_private_output_directory(path: Path) -> Path:
+    path = _absolute_output_path(path)
+    _validate_owned_output_chain(path)
+
+    missing: list[Path] = []
+    cursor = path
+    while not _lexists(cursor):
+        missing.append(cursor)
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+    _validate_owned_directory(cursor)
+
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=PRIVATE_DIR_MODE)
+        except FileExistsError:
+            pass
+        _validate_owned_directory(directory)
+        directory.chmod(PRIVATE_DIR_MODE)
+
+    _validate_owned_directory(path)
+    path.chmod(PRIVATE_DIR_MODE)
+    return path
+
+
+def _prepare_private_output_file(path: Path) -> Path:
+    path = _absolute_output_path(path)
+    _ensure_private_output_directory(path.parent)
+    _validate_owned_output_chain(path)
+    if _lexists(path):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"Refusing symbolic-link output file: {path}")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"Expected a regular output file: {path}")
+        if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+            raise ValueError(f"Output file is not owned by the current user: {path}")
+        path.chmod(PRIVATE_FILE_MODE)
+    return path
+
+
+def _validate_owned_regular_file(path: Path) -> None:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"Expected a non-symlink regular output file: {path}")
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        raise ValueError(f"Output file is not owned by the current user: {path}")
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def verify_plain_database(path: Path) -> tuple[bool, str]:
@@ -48,9 +163,15 @@ def decrypt_database(
     key: str,
     timeout: int,
 ) -> tuple[bool, str]:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
-    temp_path.unlink(missing_ok=True)
+    destination = _prepare_private_output_file(destination)
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=str(destination.parent), prefix=f".{destination.name}.", suffix=".tmp"
+    )
+    temp_path = Path(temp_name)
+    try:
+        os.fchmod(descriptor, PRIVATE_FILE_MODE)
+    finally:
+        os.close(descriptor)
     escaped_output = quote_sql_string(str(temp_path.resolve()))
     commands = f""".bail on
 PRAGMA key = \"x'{key}'\";
@@ -61,35 +182,44 @@ SELECT sqlcipher_export('plaintext');
 DETACH DATABASE plaintext;
 """
     try:
-        result = subprocess.run(
-            [sqlcipher, str(database.path)],
-            input=commands,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        temp_path.unlink(missing_ok=True)
-        return False, f"timed out after {timeout}s"
-    except OSError as exc:
-        temp_path.unlink(missing_ok=True)
-        return False, str(exc)
+        try:
+            result = subprocess.run(
+                [sqlcipher, str(database.path)],
+                input=commands,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"timed out after {timeout}s"
+        except OSError as exc:
+            return False, str(exc)
 
-    if result.returncode != 0:
-        temp_path.unlink(missing_ok=True)
-        detail = (result.stderr or result.stdout).strip().splitlines()
-        return False, detail[-1] if detail else f"sqlcipher exited {result.returncode}"
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            return (
+                False,
+                detail[-1] if detail else f"sqlcipher exited {result.returncode}",
+            )
 
-    valid, detail = verify_plain_database(temp_path)
-    if not valid:
-        temp_path.unlink(missing_ok=True)
-        return False, detail
-    os.replace(temp_path, destination)
-    return True, detail
+        valid, detail = verify_plain_database(temp_path)
+        if not valid:
+            return False, detail
+        _validate_owned_regular_file(temp_path)
+        temp_path.chmod(PRIVATE_FILE_MODE)
+        _prepare_private_output_file(destination)
+        os.replace(temp_path, destination)
+        destination.chmod(PRIVATE_FILE_MODE)
+        _fsync_directory(destination.parent)
+        return True, detail
+    finally:
+        if _lexists(temp_path):
+            temp_path.unlink()
 
 
 def main() -> int:
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description="Decrypt macOS WeChat 4.x databases")
     parser.add_argument("--db-dir", help="Account db_storage directory")
     parser.add_argument("--keys", default="wechat_keys.json")
@@ -116,7 +246,10 @@ def main() -> int:
         parser.error("sqlcipher was not found. Install it with: brew install sqlcipher")
 
     databases = collect_databases(db_dir)
-    output = Path(args.output).expanduser().resolve()
+    try:
+        output = _ensure_private_output_directory(Path(args.output))
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     decrypted = skipped = missing = failed = 0
     print(f"[*] Decrypting {len(databases)} databases with {sqlcipher}")
 
@@ -131,7 +264,14 @@ def main() -> int:
             failed += 1
             continue
 
-        destination = output.joinpath(*database.relative_path.split("/"))
+        try:
+            destination = _prepare_private_output_file(
+                output.joinpath(*database.relative_path.split("/"))
+            )
+        except (OSError, ValueError) as exc:
+            print(f"[FAIL] {database.relative_path}: {exc}")
+            failed += 1
+            continue
         if destination.exists() and not args.force:
             valid, _ = verify_plain_database(destination)
             if valid:

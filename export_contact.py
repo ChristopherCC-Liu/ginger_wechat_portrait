@@ -16,13 +16,169 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional, TextIO
 
 _SCRIPT_DIR = Path(__file__).parent
 _CONFIG_PATH = _SCRIPT_DIR / 'config.json'
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+
+def _lexists(path: Path) -> bool:
+    return os.path.lexists(os.fspath(path))
+
+
+def _absolute_output_path(path: Path) -> Path:
+    return path.expanduser().absolute()
+
+
+def _validate_owned_output_chain(path: Path) -> None:
+    """Reject user-controlled symlinks and foreign-owned path components."""
+    current_uid = os.getuid() if hasattr(os, 'getuid') else None
+    seen_owned_component = current_uid is None
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if not _lexists(current):
+            continue
+        metadata = current.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            # macOS has root-owned aliases such as /var -> /private/var. They are
+            # tolerated only before entering the current user's owned subtree.
+            if (
+                seen_owned_component
+                or current_uid is None
+                or metadata.st_uid == current_uid
+            ):
+                raise ValueError(f'Refusing symbolic-link output path: {current}')
+            continue
+        if current_uid is None:
+            continue
+        if metadata.st_uid == current_uid:
+            seen_owned_component = True
+        elif seen_owned_component:
+            raise ValueError(f'Output path is not owned by the current user: {current}')
+    if not seen_owned_component:
+        raise ValueError(f'Output path has no current-user-owned parent: {path}')
+
+
+def _validate_owned_directory(path: Path) -> None:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f'Refusing symbolic-link output directory: {path}')
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f'Expected an output directory: {path}')
+    if hasattr(os, 'getuid') and metadata.st_uid != os.getuid():
+        raise ValueError(f'Output directory is not owned by the current user: {path}')
+
+
+def _ensure_private_output_directory(path: Path) -> Path:
+    path = _absolute_output_path(path)
+    _validate_owned_output_chain(path)
+
+    missing: list[Path] = []
+    cursor = path
+    while not _lexists(cursor):
+        missing.append(cursor)
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+    _validate_owned_directory(cursor)
+
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=PRIVATE_DIR_MODE)
+        except FileExistsError:
+            pass
+        _validate_owned_directory(directory)
+        directory.chmod(PRIVATE_DIR_MODE)
+
+    _validate_owned_directory(path)
+    path.chmod(PRIVATE_DIR_MODE)
+    return path
+
+
+def _prepare_private_output_file(path: Path) -> Path:
+    path = _absolute_output_path(path)
+    _ensure_private_output_directory(path.parent)
+    _validate_owned_output_chain(path)
+    if _lexists(path):
+        metadata = path.lstat()
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f'Refusing symbolic-link output file: {path}')
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f'Expected a regular output file: {path}')
+        if hasattr(os, 'getuid') and metadata.st_uid != os.getuid():
+            raise ValueError(f'Output file is not owned by the current user: {path}')
+        path.chmod(PRIVATE_FILE_MODE)
+    return path
+
+
+def _validate_owned_regular_file(path: Path) -> None:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f'Expected a non-symlink regular output file: {path}')
+    if hasattr(os, 'getuid') and metadata.st_uid != os.getuid():
+        raise ValueError(f'Output file is not owned by the current user: {path}')
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _atomic_text_output(
+    path: Path,
+    *,
+    encoding: str,
+    newline: Optional[str] = None,
+) -> Iterator[TextIO]:
+    path = _prepare_private_output_file(path)
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f'.{path.name}.', suffix='.tmp'
+    )
+    temp_path = Path(temp_name)
+    os.fchmod(descriptor, PRIVATE_FILE_MODE)
+    handle: Optional[TextIO] = None
+    try:
+        handle = os.fdopen(descriptor, 'w', encoding=encoding, newline=newline)
+        descriptor = -1
+        yield handle
+        handle.flush()
+        os.fsync(handle.fileno())
+        handle.close()
+        handle = None
+        _validate_owned_regular_file(temp_path)
+        _prepare_private_output_file(path)
+        os.replace(temp_path, path)
+        path.chmod(PRIVATE_FILE_MODE)
+        _fsync_directory(path.parent)
+    finally:
+        if handle is not None:
+            handle.close()
+        if descriptor >= 0:
+            os.close(descriptor)
+        if _lexists(temp_path):
+            temp_path.unlink()
+
+
+def _atomic_write_json(path: Path, value: object) -> None:
+    with _atomic_text_output(path, encoding='utf-8') as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write('\n')
 
 
 def load_config() -> dict:
@@ -126,8 +282,6 @@ def find_contact(db_dir: Path, name: str):
 
 def get_self_wxid(db_dir: Path) -> str:
     """推断自己的 wxid：先查 WeChat 数据目录，再从 Name2Id 找"""
-    import glob
-
     # 方法1：从 WeChat 原始数据目录找 wxid_ 开头的文件夹
     wechat_dir = Path.home() / 'Library/Containers/com.tencent.xinWeChat/Data/Documents/xwechat_files'
     if wechat_dir.exists():
@@ -177,6 +331,8 @@ def get_sender_rowids(msg_db: Path, self_wxid: str, contact_wxid: str):
 
 def export_messages(db_dir: Path, contact_wxid: str, contact_name: str,
                     self_wxid: str, output_path: Path):
+    output_path = _prepare_private_output_file(output_path)
+    json_path = _prepare_private_output_file(output_path.with_suffix('.json'))
     table = f"Msg_{md5(contact_wxid)}"
     msg_dbs = get_message_dbs(db_dir)
     if not msg_dbs:
@@ -233,7 +389,9 @@ def export_messages(db_dir: Path, contact_wxid: str, contact_name: str,
 
     json_records = []
 
-    with open(output_path, 'w', newline='', encoding='utf-8-sig') as f:
+    with _atomic_text_output(
+        output_path, newline='', encoding='utf-8-sig'
+    ) as f:
         writer = csv.writer(f)
         writer.writerow(['timestamp', 'datetime', 'sender', 'is_sender', 'type', 'content'])
         for create_time, sender_id, local_type, content, self_id in merged_rows:
@@ -251,9 +409,9 @@ def export_messages(db_dir: Path, contact_wxid: str, contact_name: str,
                 'content': text,
             })
 
-    json_path = output_path.with_suffix('.json')
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump({
+    _atomic_write_json(
+        json_path,
+        {
             'format': 'wechat_chat_export_v1',
             'contact_wxid': contact_wxid,
             'contact_name': contact_name,
@@ -261,7 +419,8 @@ def export_messages(db_dir: Path, contact_wxid: str, contact_name: str,
             'message_count': msg_count,
             'source_databases': matched_dbs,
             'messages': json_records,
-        }, f, ensure_ascii=False, indent=2)
+        },
+    )
 
     print(f"EXPORT_PATH:{output_path}")
     print(f"JSON_PATH:{json_path}")
@@ -338,6 +497,7 @@ def get_avatar_path(wxid: str, db_dir: Optional[Path] = None) -> Optional[str]:
                         tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
                         tmp.write(data)
                         tmp.close()
+                        os.chmod(tmp.name, PRIVATE_FILE_MODE)
                         return tmp.name
             except Exception:
                 pass
@@ -346,6 +506,7 @@ def get_avatar_path(wxid: str, db_dir: Optional[Path] = None) -> Optional[str]:
 
 
 def main():
+    os.umask(0o077)
     parser = argparse.ArgumentParser(description='导出微信聊天记录 (Mac 版)')
     parser.add_argument('--contact', help='联系人备注名或昵称')
     parser.add_argument('--list-contacts', action='store_true', help='列出所有联系人')
@@ -399,6 +560,13 @@ def main():
         safe_name = safe_name.replace('/', '_').replace(' ', '_')[:20] or 'contact'
         output_path = _SCRIPT_DIR / f"export_{safe_name}.csv"
 
+    try:
+        output_path = _prepare_private_output_file(output_path)
+        _prepare_private_output_file(output_path.with_suffix('.json'))
+        meta_path = _prepare_private_output_file(output_path.with_suffix('.meta.json'))
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+
     export_messages(db_dir, username, contact_name, self_wxid, output_path)
 
     # 写 meta sidecar JSON（昵称 + 头像路径）
@@ -413,9 +581,7 @@ def main():
         'partner_name': contact_name,
         'partner_avatar_path': partner_avatar,
     }
-    meta_path = output_path.with_suffix('.meta.json')
-    with open(meta_path, 'w', encoding='utf-8') as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    _atomic_write_json(meta_path, meta)
     print(f"META_PATH:{meta_path}")
 
 

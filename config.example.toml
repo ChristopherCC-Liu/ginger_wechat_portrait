@@ -1,0 +1,69 @@
+# Ginger Personal Agent v2. Runtime secrets belong in macOS Keychain.
+schema_version = 2
+mode = "shadow"
+timezone = "Asia/Shanghai"
+poll_interval_seconds = 30
+state_root = "~/Library/Application Support/GingerAgent"
+identity_key_ref = "identity-key"
+state_key_ref = "state-key"
+
+# Add only pseudonymous contact keys printed by the local enrollment command.
+allowlist = []
+
+[reader]
+backend = "plaintext"
+# Set this to a local read-only decrypted db_storage directory.
+db_dir = ""
+sqlcipher_path = "/opt/homebrew/bin/sqlcipher"
+keychain_db_key_prefix = "wechat-db-key"
+self_id_ref = "wechat-self-id"
+overlap_seconds = 300
+batch_size = 500
+# The first run imports only this recent window and marks it observed without a model.
+bootstrap_lookback_seconds = 86400
+
+[model]
+provider = "local"
+model = ""
+base_url = "http://127.0.0.1:11434/v1"
+# For OpenAI or GLM, set a Keychain account name, never the API key itself.
+api_key_ref = ""
+timeout_seconds = 30
+max_response_bytes = 1000000
+max_request_bytes = 524288
+max_output_tokens = 900
+context_messages = 12
+
+[cost]
+daily_usd_limit = 1.00
+daily_call_limit = 20
+per_contact_hourly_limit = 3
+
+# Prices are examples only. Set current prices before enabling a paid provider.
+[cost.model_prices_per_million_tokens]
+
+# Example paid model pricing. Use a quoted model name and update from the
+# provider's current official pricing before selecting a paid provider.
+# [cost.model_prices_per_million_tokens."your-model-snapshot"]
+# input = 0.00
+# output = 0.00
+
+[learning]
+# Local-only refresh; no text model or UI sender is used.
+enabled = true
+refresh_interval_seconds = 86400
+minimum_corrections = 3
+# Only language style, decision preferences, emotion proxies, and non-boundary
+# relationship style fields may activate automatically.
+auto_activate_safe = true
+
+[sender]
+backend = "accessibility"
+# Optional typing-only controlled fallback: "computer_use". Computer Use can
+# never click Send; real-send code accepts Accessibility as primary only.
+fallback_backend = ""
+computer_use_helper = ""
+typing_only = true
+real_send_enabled = false
+canary_ref = "real-send-canary"
+ui_timeout_seconds = 12

@@ -2,6 +2,7 @@
 .venv/
 __pycache__/
 *.py[cod]
+.ruff_cache/
 
 # Local WeChat data and secrets
 config.json
@@ -14,3 +15,38 @@ export_*.csv
 export_*.json
 *.meta.json
 wechat_analysis_output/
+outputs/
+*_chat.json
+*_chat_full.json
+*.log
+*.jsonl
+
+# Local personal-agent state (contains private message text)
+personal_agent_state/
+
+# Personal Agent v2 runtime and credentials
+.env
+.env.*
+state/
+runtime/
+logs/
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlcipher
+*.key
+*.pem
+all_keys.json
+wechat_keys*.json
+KILL_SWITCH
+PAUSED
+
+# Build, test, and release products
+build/
+dist/
+*.egg-info/
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/

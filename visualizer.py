@@ -6,7 +6,6 @@ import os
 from collections import Counter
 from typing import Optional
 
-import matplotlib
 import matplotlib.font_manager as fm
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
