@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import io
 import json
@@ -8,6 +9,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -294,8 +296,78 @@ class ReleaseAndCliSecurityTests(unittest.TestCase):
             expected = "0+unknown"
         self.assertEqual(personal_agent.__version__, expected)
         source = (ROOT / "personal_agent" / "__init__.py").read_text(encoding="utf-8")
+        self.assertNotIn('__version__ = "0.2.0rc2"', source)
         self.assertNotIn('__version__ = "0.2.0rc1"', source)
         self.assertNotIn('__version__ = "0.1.0"', source)
+
+    def test_release_installer_accepts_normal_tar_directory_entries(self):
+        version = "v0.2.0-rc.2"
+        prefix = f"ginger-personal-agent-{version}"
+        archive_name = f"{prefix}.tar.gz"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            release_dir = root / "release"
+            source_root = root / "source" / prefix
+            fake_bin = root / "bin"
+            release_dir.mkdir()
+            source_root.mkdir(parents=True)
+            fake_bin.mkdir()
+
+            installer = source_root / "install-macos.sh"
+            installer.write_text(
+                '#!/bin/sh\nset -eu\nprintf installed > "$INSTALL_MARKER"\n',
+                encoding="utf-8",
+            )
+            installer.chmod(0o700)
+            (source_root / "nested").mkdir()
+            (source_root / "nested" / "fixture.txt").write_text(
+                "synthetic release fixture\n", encoding="utf-8"
+            )
+
+            archive = release_dir / archive_name
+            with tarfile.open(archive, mode="w:gz") as bundle:
+                bundle.add(source_root, arcname=prefix)
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            (release_dir / "SHA256SUMS").write_text(
+                f"{digest}  {archive_name}\n", encoding="utf-8"
+            )
+
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                "set -eu\n"
+                "output=\n"
+                "url=\n"
+                'while [ "$#" -gt 0 ]; do\n'
+                '  case "$1" in\n'
+                "    --output) output=$2; shift 2 ;;\n"
+                "    *) url=$1; shift ;;\n"
+                "  esac\n"
+                "done\n"
+                'cp "$FIXTURE_RELEASE_DIR/${url##*/}" "$output"\n',
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o700)
+            marker = root / "installed.marker"
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "FIXTURE_RELEASE_DIR": str(release_dir),
+                    "INSTALL_MARKER": str(marker),
+                    "PATH": f"{fake_bin}:{environment['PATH']}",
+                }
+            )
+
+            result = subprocess.run(
+                [str(ROOT / "scripts" / "install-release.sh"), version],
+                capture_output=True,
+                text=True,
+                env=environment,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(marker.read_text(encoding="utf-8"), "installed")
 
     def test_distillation_mutations_redact_payload_from_stdout(self):
         result = {

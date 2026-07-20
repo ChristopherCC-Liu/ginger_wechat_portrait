@@ -29,7 +29,7 @@ Never install by scheduling `git pull main`. Select an immutable tag and verify 
 published checksum:
 
 ```bash
-VERSION=v0.2.0-rc.1
+VERSION=v0.2.0-rc.2
 curl -fsSLO "https://github.com/ChristopherCC-Liu/ginger_wechat_portrait/releases/download/${VERSION}/ginger-personal-agent-${VERSION}.tar.gz"
 curl -fsSLO "https://github.com/ChristopherCC-Liu/ginger_wechat_portrait/releases/download/${VERSION}/SHA256SUMS"
 grep "  ginger-personal-agent-${VERSION}.tar.gz$" SHA256SUMS | shasum -a 256 -c -
@@ -128,7 +128,7 @@ environment in place, validates every installed entry point, then switches the
 `config.toml`, Keychain items, ledger, controls, and logs remain in place.
 
 ```bash
-"$HOME/Library/Application Support/GingerAgent/bin/install-release" v0.2.0-rc.1
+"$HOME/Library/Application Support/GingerAgent/bin/install-release" v0.2.0-rc.2
 ```
 
 Rollback uses the same command with the previous release tag. Distillation rollback

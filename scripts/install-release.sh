@@ -47,14 +47,21 @@ curl --fail --location --proto '=https' --tlsv1.2 \
 mkdir "$TMP_ROOT/source"
 PREFIX="ginger-personal-agent-${VERSION}"
 LC_ALL=C tar -tzf "$TMP_ROOT/$ARCHIVE" | while IFS= read -r member; do
-  case "$member" in
+  # tar lists directory entries with one trailing slash. Remove only that
+  # delimiter; a second or embedded slash remains visible to the safety check.
+  normalized_member=${member%/}
+  [ -n "$normalized_member" ] || {
+    printf '%s\n' "error: release archive contains an unsafe path" >&2
+    exit 1
+  }
+  case "$normalized_member" in
     "$PREFIX"|"$PREFIX"/*) ;;
     *)
       printf '%s\n' "error: release archive contains an unexpected path" >&2
       exit 1
       ;;
   esac
-  case "/$member/" in
+  case "/$normalized_member/" in
     */../*|*/./*|*//*)
       printf '%s\n' "error: release archive contains an unsafe path" >&2
       exit 1
