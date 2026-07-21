@@ -7,6 +7,10 @@ Ginger's offline portrait reports and adds Personal Agent v2: read-only incremen
 ingestion, encrypted state, versioned self/relationship distillation, strict reply
 decisions, persistent budgets, launchd operations, and isolated UI validation.
 
+首次安装和日常使用请直接阅读
+[macOS 中文详细教程](docs/TUTORIAL_ZH.md)；精简命令参考见
+[INSTALL_MACOS.md](docs/INSTALL_MACOS.md)。
+
 ## Prerelease safety status
 
 The configuration default is `shadow` and the first real send is not pre-enabled:
@@ -215,8 +219,8 @@ Install and upgrade only from an immutable GitHub Release tag plus its published
 validates the checksum, archive root, path safety, and absence of links/special
 files before creating a new versioned virtual environment.
 
-No published Release is asserted here. After choosing a tag that is visibly present
-in GitHub Releases, set `RELEASE_TAG` and use the candidate installer contract:
+The installable prerelease is `v0.2.0-rc.2`. Verify that fixed tag and its checksum
+in GitHub Releases before using the installer contract:
 
 ```bash
 RELEASE_TAG="${RELEASE_TAG:?set a published fixed vX.Y.Z tag}"

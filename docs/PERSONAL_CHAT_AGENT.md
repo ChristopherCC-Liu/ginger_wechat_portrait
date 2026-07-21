@@ -388,9 +388,9 @@ root, traversal, links, and special files. `install-macos.sh` then installs lock
 dependencies into a new versioned virtual environment and atomically switches the
 stable command links.
 
-No published Release is asserted here. Once a chosen fixed tag is visibly published,
-use `scripts/install-release.sh "$RELEASE_TAG"` for initial installation or the
-installed `install-release` command for upgrade/rollback. Re-run `doctor` and
+The installable prerelease is `v0.2.0-rc.2`. Verify the fixed tag and its published
+checksum, then use `scripts/install-release.sh "$RELEASE_TAG"` for initial installation
+or the installed `install-release` command for upgrade/rollback. Re-run `doctor` and
 `install-service` afterward so launchd points at the selected interpreter. Never use
 scheduled or manual `git pull` as the installed upgrade path.
 
@@ -421,4 +421,4 @@ terminal no-retry behavior. Fixtures contain fictional data.
 
 The prerelease acceptance boundary is Shadow plus controlled typing-only validation.
 The existence of gated Accessibility and canary code is not evidence that a real
-send or a GitHub Release has occurred.
+send has occurred.

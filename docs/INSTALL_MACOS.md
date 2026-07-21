@@ -1,5 +1,8 @@
 # Ginger Personal Agent v2: macOS installation and operations
 
+需要从新 Mac 安装、微信数据库密钥提取、模型配置、Shadow 首跑、蒸馏回滚和故障排查的
+完整步骤，请阅读 [中文详细教程](TUTORIAL_ZH.md)。
+
 ## Safety state after installation
 
 The installed default is `shadow`. Database polling is local and makes no model
