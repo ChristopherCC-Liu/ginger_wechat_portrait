@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=83,<84", "wheel>=0.45,<1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ginger-personal-agent"
+version = "0.2.0rc2"
+description = "Local-first macOS personal chat agent built on Ginger"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "ChristopherCC-Liu" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: MacOS X",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Communications :: Chat",
+]
+dependencies = [
+  "cryptography>=46.0.5,<47",
+  "tomli>=2.2.1,<3; python_version < '3.11'",
+  "zstandard>=0.22,<1",
+]
+
+[project.optional-dependencies]
+installer = [
+  "setuptools>=83,<84",
+  "wheel>=0.45,<1",
+]
+analysis = [
+  "anthropic>=0.40,<1",
+  "jieba>=0.42.1,<1",
+  "matplotlib>=3.7,<4",
+  "numpy>=1.24,<3",
+  "pandas>=2,<4",
+  "pillow>=10,<13",
+  "seaborn>=0.12,<1",
+  "wordcloud>=1.9,<2",
+  "zstd>=1.5.7.2,<2",
+]
+dev = [
+  "build>=1.3,<2",
+  "ruff>=0.15,<1",
+]
+
+[project.scripts]
+ginger-agent = "personal_agent.cli:main"
+ginger-wechat-db-doctor = "tools.wechat_db.doctor_macos:main"
+ginger-wechat-find-keys = "tools.wechat_db.find_keys_macos:main"
+ginger-wechat-decrypt = "tools.wechat_db.decrypt_macos:main"
+ginger-shadow-replay = "personal_agent.replay:main"
+
+[project.urls]
+Homepage = "https://github.com/ChristopherCC-Liu/ginger_wechat_portrait"
+Repository = "https://github.com/ChristopherCC-Liu/ginger_wechat_portrait"
+Issues = "https://github.com/ChristopherCC-Liu/ginger_wechat_portrait/issues"
+
+[tool.setuptools.packages.find]
+include = ["personal_agent*", "tools*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+exclude = ["personal_agent_state", "outputs", "decrypted", ".venv"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

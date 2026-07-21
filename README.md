@@ -1,177 +1,289 @@
-# 🍪 微信聊天记录分析工具
+# Ginger Personal Agent
 
-> 一个运行在 Claude Code 里的 Skill：输入联系人的名字，自动生成**双人聊天行为可视化 + AI 人格对比分析报告**。无需 API Key，分析由 Claude Code 本地完成。
+**Last updated:** 2026-07-21
 
----
+Local-first macOS WeChat analysis and personal reply-agent tooling. This fork keeps
+Ginger's offline portrait reports and adds Personal Agent v2: read-only incremental
+ingestion, encrypted state, versioned self/relationship distillation, strict reply
+decisions, persistent budgets, launchd operations, and isolated UI validation.
 
-## 效果预览
+首次安装和日常使用请直接阅读
+[macOS 中文详细教程](docs/TUTORIAL_ZH.md)；精简命令参考见
+[INSTALL_MACOS.md](docs/INSTALL_MACOS.md)。
 
-<p align="center"><img src="pics/preview-header.png" width="70%" alt="报告总览"></p>
+## Prerelease safety status
 
-<table>
-<tr>
-<td width="50%"><img src="pics/preview-wordcloud-big5.png" alt="词云对比 + Big Five 蝴蝶图"></td>
-<td width="50%"><img src="pics/preview-heatmap.png" alt="聊天频率热力图"></td>
-</tr>
-</table>
+The configuration default is `shadow` and the first real send is not pre-enabled:
 
-<p align="center"><img src="pics/preview-mbti.png" width="70%" alt="MBTI 双人推断"></p>
+- `shadow` may create encrypted drafts but never opens or changes WeChat UI.
+- First-run history is baselined with zero model calls and zero send actions.
+- `sender.typing_only` defaults to `true`; `sender.real_send_enabled` defaults to
+  `false`.
+- Computer Use can perform typing-only verification and rejects every click request.
+- The installer and launchd job never create a canary automatically.
+- `arm-send-canary` must be run explicitly at the action point with
+  `--confirm SEND_ONCE`; the prerelease has not run that command and this
+  documentation claims no real-send execution.
 
-<p align="center"><img src="pics/preview-style.png" width="70%" alt="AI 风格总结"></p>
+Money, contracts, medical/legal matters, verification codes, credentials, privacy
+disclosure, disputes, and major relationship decisions always require a human.
 
-所有内容整合为一份精美 HTML 报告，图表可直接截图发布。
+## Runtime architecture
 
----
+```text
+launchd run-once
+  -> discover read-only WeChat shards and tables
+  -> three-state direction classification
+  -> encrypted, deduplicated event ledger + per-table cursors
+  -> local reply-needed rules
+  -> contact-isolated context + six-domain active distillation
+  -> OpenAI / GLM / loopback-local structured decision adapter
+  -> strict ReplyDecision + initial deterministic authority gate
+  -> bounded current-contact personal-style render
+  -> post-render risk, commitment, and autopilot safe-ack gate
+  -> encrypted draft + durable relationship/emotion delay
+  -> optional action-point approval or one-time canary
+  -> Accessibility exact-recipient/exact-body check
+  -> exact outbound database readback + terminal audit state
+```
 
-## 使用要求
+### Four modes
 
-| 项目 | 要求 |
-|------|------|
-| 操作系统 | macOS 12 及以上 |
-| 微信版本 | Mac 客户端 4.x / 4.1.x（自动探测当前数据目录） |
-| Python | 3.10 及以上（`python3 --version` 检查） |
-| Claude Code | 已安装（`claude --version` 检查） |
+| Mode | Model | Draft | UI/send behavior |
+|---|---|---|---|
+| `observe` | No | No | Read and record only |
+| `shadow` (default) | Rules first | Encrypted | No UI action |
+| `approve` | Rules first | Approval required | One fresh approval permits one typing-only validation; never a click |
+| `autopilot` | Rules first | Candidate only | A click remains inaccessible unless every send gate and a one-time canary pass |
 
----
+An `approve-draft` approval lasts at most 600 seconds, is consumed once by
+`typing-validate`, and returns `send_allowed=false`. It is not a real-send approval.
 
-## 安装部署
+## Incremental reader and exact readback
 
-**克隆仓库，在目录内打开 Claude Code，即可使用。**
+Every poll rediscovers the latest `message/message_N.db` shards and validated
+`Msg_<md5>` tables. Existing `(shard, table)` cursors resume in
+`(create_time, local_id)` order with a bounded overlap for late WAL visibility.
+HMAC-derived event identities, canonical collision checks, and transactional
+`INSERT OR IGNORE` semantics deduplicate that overlap and survive restarts.
+
+The first run reads only the configured lookback and marks imported inbound events
+as observed, without a model or sender. Its completion time is persisted as one
+global bootstrap cutoff. A shard or table discovered later starts at that cutoff,
+not at the beginning of chat history; an existing runtime refuses to start if the
+cutoff is absent or invalid.
+
+Direction is deliberately three-state: `inbound`, `outbound`, or `unknown`.
+Unresolved senders and unsafe group-chat cases remain `unknown`; they are never
+guessed into an actionable direction and are not processed as inbound replies or
+outbound readback. Real-send configuration additionally requires the local self ID
+from Keychain so readback can classify direction safely.
+
+After a click, readback accepts only a newly observed outbound event for the same
+pseudonymous contact whose entire UTF-8 body equals the draft. Suffix matches,
+trimmed variants, old identical events, and events at or below the pre-click
+watermark do not confirm a send.
+
+## Models, budget, and ChatGPT Pro boundary
+
+The production runtime supports three adapters: OpenAI, GLM, and a local
+OpenAI-compatible endpoint restricted to literal loopback hosts. Remote providers
+require HTTPS. Provider keys are Keychain references; raw credentials in TOML are
+rejected. Responses must contain one strict `ReplyDecision`; tools, redirects,
+duplicate keys, extra choices, malformed JSON, and oversized responses fail closed.
+
+After that structured decision is parsed and initially gated, a deterministic
+personal-style layer may render it using only the active current contact's
+`preferred_address`, `temperature`, `emoji_policy`, and `preferred_emoji`, plus the
+global `language_style.sentence_ending`. It cannot add facts, commitments,
+recipients, confidence, or authority. The completed body is then checked again for
+risk and commitment language; an autopilot candidate must also remain a fact-free
+canned safe acknowledgement. Styling can therefore downgrade a candidate to a
+draft or human handling, never promote one.
+
+Before HTTP, the adapter reserves one daily call and a conservative maximum cost.
+Daily call/USD limits are encrypted and persistent across launchd runs. Paid models
+require explicit pricing; local models default to zero USD but still consume the
+call count. A failed or timed-out request consumes its reserved maximum because the
+client cannot prove it was unbilled. Per-contact send frequency is a separate gate.
+
+ChatGPT Pro is only an independent review channel for public repository material.
+It is not a production backend, receives no local chat/state/secret data, and cannot
+approve a draft, arm a canary, or authorize sending. See
+[the public-only review](docs/CHATGPT_PRO_REVIEW.md).
+
+## Six-domain distillation and rollback
+
+The immutable domains are `stable_facts`, `values_boundaries`, `relationship`,
+`decision_preferences`, `language_style`, and `emotion_cycle`. Each version records
+its parent, evidence IDs, confidence, payload hash, protected fields, correction
+type, scope, and creation time. Global domains and each contact's `relationship`
+scope are isolated. Activation is explicit or restricted to safe automatic
+learning; rollback may select only an ancestor in the same scope.
+
+Stable facts and values are fully protected. Relationship boundaries plus
+`display_name` and `ui_search_token` are protected and require a
+`user_confirmed` version. Automatic learning may update only non-boundary style,
+decision, language, relationship observations, and outbound-text emotion proxies.
+
+### Enroll a contact's UI identity
+
+Prepare a private, untracked `ui-identity.enrollment.json` with fictional values
+replaced locally:
+
+```json
+{
+  "display_name": "Example Contact A",
+  "ui_search_token": "example-unique-search-token-a"
+}
+```
+
+The two values must be non-empty and different after trimming. `display_name` is
+the exact visible label that must occur once; `ui_search_token` is the different
+string pasted into WeChat search. Bind both to the same pseudonymous contact with
+explicit user confirmation:
 
 ```bash
-git clone https://github.com/Jiang59991/wechat-analyzer.git ~/wechat-analyzer
-cd ~/wechat-analyzer
-claude
+AGENT_HOME="${GINGER_AGENT_HOME:-$HOME/Library/Application Support/GingerAgent}"
+AGENT="$AGENT_HOME/bin/ginger-agent"
+CONFIG="$AGENT_HOME/config.toml"
+CONTACT_KEY="${CONTACT_KEY:?set a locally generated contact_ pseudonym}"
+
+chmod 600 ui-identity.enrollment.json
+"$AGENT" --config "$CONFIG" distill-put \
+  --domain relationship \
+  --contact-key "$CONTACT_KEY" \
+  --payload-file ui-identity.enrollment.json \
+  --confidence 1 \
+  --protected-field display_name \
+  --protected-field ui_search_token \
+  --user-confirmed \
+  --activate
 ```
 
-仓库内置了 `.claude/commands/analyze-wechat.md`，Claude Code 在该目录下会**自动识别**，无需任何注册步骤。
+Do not commit the payload. Draft creation records the active identity version;
+typing/click paths revalidate that the same version is still active and that a
+user-confirmed ancestor contains the identical pair.
 
-> **想在任意目录都能用？** 在 Claude Code 里说：
-> `"帮我把 analyze-wechat 全局安装"`
-> Claude 会自动把命令文件复制到 `~/.claude/commands/`。
+## Timing and real-send gates
 
----
+Relationship latency and emotion controls can increase the delay, never authority.
+The chosen delay and `not_before_epoch` are stored with the encrypted draft. At the
+due time, the runtime does not call the model again: it revalidates the durable
+decision and persisted post-style body, low-risk and no-commitment rules, current
+mode, allowlist, budget, frequency, active UI identity, latest inbound event, and
+matching canary. Without a valid canary, it records zero send attempts and leaves
+the draft pending for explicit arming. Once preflight passes, it records one
+terminal send claim; blocked, failed, uncertain, or unconfirmed attempts are not
+retried automatically.
 
-## 快速开始
+Even in `autopilot`, a real-send candidate requires all of the following:
 
-在仓库目录打开 Claude Code，直接运行：
+- `real_send_enabled=true`, `typing_only=false`, and Accessibility as primary;
+- a hashed allowlist match and a user-confirmed, still-active UI identity pair;
+- low risk, no commitments, complete context, verbatim-grounded facts, and
+  confidence at least `0.92`;
+- the current implementation's narrower fact-free, canned acknowledgement check;
+- current daily budget and per-contact frequency capacity;
+- a due, authenticated `autopilot_candidate` draft whose source remains the latest
+  inbound event;
+- one matching, unexpired Keychain canary bound to the deterministic attempt ID,
+  contact key, and full-body SHA-256;
+- exact unique recipient and full editor-body equality in Accessibility;
+- a strictly post-click, exact full-body outbound database readback.
 
-```
-/analyze-wechat
-```
-
-或者自然语言：
-
-```
-帮我分析和小明的聊天记录
-```
-
-**Skill 会自动完成从安装依赖到生成报告的全部流程。**
-
-### 内置数据库工具
-
-项目现在直接包含最新版微信 4.x 所需的环境诊断、逐库密钥扫描和批量解密工具，不再依赖另行克隆 `wechat-db-decrypt-macos`：
+`arm-send-canary` writes that one-time Keychain record but does not itself click:
 
 ```bash
-# 1. 只读诊断：显示微信版本、账号数据库、运行 PID、LLDB、SQLCipher 和 SIP 状态
-python3 tools/wechat_db/doctor_macos.py
-
-# 2. 在系统 Terminal.app 中提取逐数据库密钥
-PYTHONPATH="$(lldb -P)" \
-  /Library/Developer/CommandLineTools/usr/bin/python3 \
-  tools/wechat_db/find_keys_macos.py --output wechat_keys.json
-
-# 3. 批量解密为普通 SQLite，保留 message/contact 等原目录结构
-python3 tools/wechat_db/decrypt_macos.py \
-  --keys wechat_keys.json --output decrypted
+DRAFT_ID="${DRAFT_ID:?select a due autopilot_candidate draft}"
+"$AGENT" --config "$CONFIG" arm-send-canary \
+  --draft-id "$DRAFT_ID" \
+  --expires-seconds 120 \
+  --confirm SEND_ONCE
 ```
 
-工具会自动识别正式版和 Beta 版的 `xwechat_files/<账号>/db_storage`，按数据库第一页 salt 验证每把密钥，并在解密后运行 SQLite `quick_check`。密钥文件权限会收紧为 `0600`。
+The command accepts only 1-600 seconds and only an allowlisted, due candidate in
+enabled autopilot mode with a verified user-confirmed UI identity and no prior
+terminal send claim. The deterministic attempt ID lets the next eligible runtime
+cycle consume exactly that canary once. Installation and background scheduling
+never arm it automatically; this prerelease has not run the command.
 
-若系统中同时有多个名为 `WeChat` 的进程，扫描器会优先选择实际打开当前账号数据库的 PID。无法唯一判断时，先运行：
+Computer Use rejects `click_send` unconditionally. Only Accessibility can consume a
+canary and press Return. The editor check is full equality (`editor == body`), never
+suffix matching.
+
+## Fixed Release install and upgrade
+
+Install and upgrade only from an immutable GitHub Release tag plus its published
+`SHA256SUMS`; never use `git pull` as an installed update mechanism. The installer
+validates the checksum, archive root, path safety, and absence of links/special
+files before creating a new versioned virtual environment.
+
+The installable prerelease is `v0.2.0-rc.2`. Verify that fixed tag and its checksum
+in GitHub Releases before using the installer contract:
 
 ```bash
-PYTHONPATH="$(lldb -P)" \
-  /Library/Developer/CommandLineTools/usr/bin/python3 \
-  tools/wechat_db/find_keys_macos.py --list-processes
+RELEASE_TAG="${RELEASE_TAG:?set a published fixed vX.Y.Z tag}"
+./scripts/install-release.sh "$RELEASE_TAG"
 ```
 
-然后按输出添加 `--pid <PID>`，不会再触发 LLDB 的 `more than one process named WeChat` 错误。
+For an already installed copy, the same verified flow is installed as:
 
----
-
-## 需要手动完成的前置步骤
-
-以下两步是**一次性操作**，完成后后续所有分析均全自动。
-
-### 步骤一：关闭 SIP（系统完整性保护）
-
-macOS 的 SIP 会阻止读取微信进程中的加密密钥，必须先在恢复模式中关闭一次。
-
-**详细步骤见 [安装指南.md](./安装指南.md)**
-
-### 步骤二：手动运行项目内置密钥提取脚本
-
-密钥提取需要调试器权限（lldb），必须在已获“开发者工具”权限的系统 Terminal.app 中运行。脚本使用 `--pid` 附加，不依赖 LLDB 按进程名选择。
-
-Skill 会给出完整命令，你复制粘贴到 Terminal.app 执行，然后在微信里依次点开几个聊天窗口触发密钥捕获即可。
-
-**完整操作说明见 [安装指南.md](./安装指南.md)**
-
-> 这两步只需做一次。完成后可以立刻重新开启 SIP，之后所有分析完全自动。
-
----
-
-## Skill 会问你哪些问题？
-
-整个流程**最多只会被问 3 次**：
-
-| 时机 | 问题 | 频率 |
-|------|------|------|
-| 启动时 | 你想分析和谁的聊天记录？ | 每次（除非命令里已指定） |
-| 首次运行（仅 Level 3） | 确认微信已登录并给出手动命令 | 仅首次提取密钥时 |
-| 按需 | 找到多个同名联系人，选择哪个？ | 有重名联系人时 |
-
-其余所有步骤均**全自动完成**，无需干预。
-
----
-
-## 输出文件
-
-分析完成后，所有文件保存在工具目录的 `wechat_analysis_output/` 下（默认 `~/.claude/wechat-analyzer/wechat_analysis_output/`）：
-
-```
-wechat_analysis_output/
-├── report.html              ← 完整 HTML 报告（浏览器打开）
-├── report.css               ← 报告样式文件（与 report.html 同目录）
-├── personality_result.json  ← 自己的 AI 分析结果
-├── partner_result.json      ← 对方的 AI 分析结果（双人模式）
-├── personality_raw.json     ← 最终输出的分析原始数据
-└── charts/
-    ├── hourly.png           ← 24 小时发消息分布
-    ├── monthly_trend.png    ← 月度消息趋势
-    ├── weekday_bar.png      ← 星期分布
-    ├── word_cloud_pair.png  ← 双人高频词词云（有对方数据时）
-    ├── word_cloud.png       ← 单人词云（仅自己数据时）
-    ├── length_dist.png      ← 消息长度分布
-    └── radar.png            ← Big Five 雷达图（单人模式）
+```bash
+"$AGENT_HOME/bin/install-release" "$RELEASE_TAG"
+"$AGENT" --config "$CONFIG" doctor
+"$AGENT" --config "$CONFIG" install-service
 ```
 
----
+Use the same command with the previous fixed tag for rollback. Re-running
+`install-service` updates and restarts the user LaunchAgent against the selected
+version. Source checkouts are for development and validation, not installed
+upgrades.
 
-## 隐私说明
+## Operate the LaunchAgent
 
-- 所有数据处理在**本地**完成
-- AI 人格分析由 **Claude Code 本身**完成，不需要 Anthropic API Key，不向外部发送消息内容
-- 不会收集或上传任何数据到其他地方
-- 请勿用于分析他人设备上的数据
+```bash
+"$AGENT" --config "$CONFIG" doctor
+"$AGENT" --config "$CONFIG" run-once
+"$AGENT" --config "$CONFIG" install-service
+"$AGENT" --config "$CONFIG" status
+"$AGENT" --config "$CONFIG" cost-report
+"$AGENT" --config "$CONFIG" pause
+"$AGENT" --config "$CONFIG" resume
+"$AGENT" --config "$CONFIG" kill-switch --enable
+"$AGENT" --config "$CONFIG" kill-switch --clear
+"$AGENT" --config "$CONFIG" uninstall-service
+```
 
----
+`doctor` is read-only and performs zero network, model, and send actions. It exits
+`0` only when all required readiness checks pass, `1` when any required check fails,
+and `2` for configuration or command errors. `resume` refuses while the kill switch
+is active; clear it explicitly first.
 
-## 技术流程
+## Test, replay, and publication scan
 
-见 [SKILL.md](./SKILL.md)
+```bash
+PYTHONDONTWRITEBYTECODE=1 python -B -m unittest discover -s tests -v
+python -m personal_agent.replay \
+  --replay tests/fixtures/shadow_replay.json \
+  --risks tests/fixtures/risk_cases.json
+python3 scripts/check-release-tree.py --candidate-tree
+```
 
----
+Checked-in fixtures are fictional. The release scanner covers tracked and untracked
+candidate files so a code-bearing untracked tree can still be checked before it is
+staged. It rejects non-allowlisted paths, databases, local user paths, non-synthetic
+identifiers, credential patterns, unsafe binaries, and oversized files.
 
-*macOS 12+ · WeChat 4.x / 4.1.x · Python 3.10+ · Xcode Command Line Tools · Claude Code*
+## Original Ginger and privacy boundary
+
+The original `/analyze-wechat` portrait workflow, charts, personality analysis,
+HTML reports, and the v1 manual-review bundle remain available. Personal Agent v2
+does not use those reports as runtime authorization. See [SKILL.md](SKILL.md) and
+[the detailed v2 contract](docs/PERSONAL_CHAT_AGENT.md).
+
+Only source, tests, fictional fixtures, documentation, installation scripts,
+LaunchAgent templates, and dependency locks belong in Git. Never track exports,
+reports, databases, WAL/SHM files, key files, application state, logs, model
+responses, UI identity payloads, or local contact mappings. Do not use `git add .`.
+See [the security model](docs/SECURITY.md).

@@ -89,8 +89,10 @@ def main() -> int:
         print_status("database", f"not found: {exc}")
         db_dir = None
         candidates = []
+    database_ready = False
     if db_dir is not None:
         databases = collect_databases(db_dir)
+        database_ready = bool(databases)
         salt_count = len({database.salt for database in databases})
         print_status("database", str(db_dir))
         print_status("encrypted DBs", f"{len(databases)} files / {salt_count} salts")
@@ -129,7 +131,7 @@ def main() -> int:
             "  python3 tools/wechat_db/decrypt_macos.py "
             "--keys wechat_keys.json --output decrypted"
         )
-    return 0
+    return 0 if database_ready else 1
 
 
 if __name__ == "__main__":

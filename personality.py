@@ -9,7 +9,6 @@ import json
 import re
 from typing import List
 
-import pandas as pd
 try:
     from anthropic import Anthropic
 except Exception:  # optional unless analyze() is called

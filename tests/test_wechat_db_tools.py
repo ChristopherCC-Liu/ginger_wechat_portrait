@@ -12,11 +12,22 @@ from pathlib import Path
 from unittest import mock
 
 from tools.wechat_db import common
+from tools.wechat_db import doctor_macos
 from tools.wechat_db.decrypt_macos import verify_plain_database
 from tools.wechat_db.find_keys_macos import choose_process_id, parse_key_specs
 
 
 class WeChatDatabaseToolTests(unittest.TestCase):
+    @mock.patch("tools.wechat_db.doctor_macos.command_output", return_value=None)
+    @mock.patch("tools.wechat_db.doctor_macos.process_database_scores", return_value={})
+    @mock.patch("tools.wechat_db.doctor_macos.resolve_db_dir")
+    def test_doctor_returns_nonzero_when_database_is_missing(
+        self, resolve_db_dir, _scores, _command_output
+    ):
+        resolve_db_dir.side_effect = FileNotFoundError("fixture database missing")
+        with mock.patch("sys.argv", ["ginger-wechat-db-doctor"]):
+            self.assertEqual(doctor_macos.main(), 1)
+
     def test_discovery_prefers_most_recent_account(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

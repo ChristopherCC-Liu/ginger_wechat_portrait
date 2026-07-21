@@ -1,0 +1,7 @@
+include config.example.toml
+include install-macos.sh
+include NOTICE.md
+recursive-include docs *.md *.json
+recursive-include packaging *.plist
+recursive-include scripts *.sh
+recursive-include tests/fixtures *.json
